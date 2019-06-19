@@ -138,6 +138,9 @@ def gpg_sign_object(content, keyid=None, homedir=None):
         if sub_key_full_keyid.endswith(short_keyid.lower()):
           signature["keyid"] = sub_key_full_keyid
           break
+  else:
+    # Export public key bundle (master key including with optional subkeys)
+    public_key_bundle = gpg_export_pubkey(signature["keyid"], homedir)
 
   # If there is still no full keyid something went wrong
   if not signature["keyid"]: # pragma: no cover
@@ -146,6 +149,36 @@ def gpg_sign_object(content, keyid=None, homedir=None):
 
   # It is okay now to remove the optional short keyid to save space
   signature.pop("short_keyid", None)
+
+  # zero-pad the signature due to a discrepancy between the openssl backend
+  # and the gnupg interpretation of PKCSv1.5. Read more at:
+  # https://github.com/in-toto/in-toto/issues/171#issuecomment-440039256
+  # we are skipping this if on the tests because well, how would one test this
+  # deterministically.
+  if public_key_bundle["type"] == "rsa" and \
+     public_key_bundle["method"] == "pgp+rsa-pkcsv1.5": # pragma: no cover
+    # Get the public key info for this keyid.
+    pubkey_info = None
+
+    # Check if the master key matches.
+    if public_key_bundle["keyid"] == signature["keyid"]:
+      pubkey_info = public_key_bundle
+    # Otherwise, check all the subkeys.
+    else:
+      for sub_keyid, sub_pubkey_info in public_key_bundle["subkeys"].items():
+        if sub_keyid == signature["keyid"]:
+          pubkey_info = sub_pubkey_info
+
+    # If there is still no pubkey info something went wrong
+    if not pubkey_info: # pragma: no cover
+      raise ValueError("Pubkey info could not be determined for keyid '{}'".
+          format(signature["keyid"]))
+
+    pubkey_length = len(pubkey_info['keyval']['public']['n'])
+    signature_length = len(signature['signature'])
+    if pubkey_length != signature_length: # pragma: no cover
+      zero_pad = "0"*(pubkey_length - signature_length)
+      signature['signature'] = "{}{}".format(zero_pad, signature['signature'])
 
   return signature
 
